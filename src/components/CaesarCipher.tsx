@@ -69,9 +69,146 @@ const CaesarCipher: React.FC = () => {
   const [highlightedInnerIndex, setHighlightedInnerIndex] = useState(-1);
   const [highlightedOuterIndex, setHighlightedOuterIndex] = useState(-1);
   const animationRef = useRef<NodeJS.Timeout | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const spinningSoundRef = useRef<{
+    oscillator1: OscillatorNode;
+    oscillator2: OscillatorNode;
+    noiseNode: AudioBufferSourceNode;
+    noiseGain: GainNode;
+    gainNode: GainNode;
+  } | null>(null);
+  const lastRotationRef = useRef(0);
+  const noiseStopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
   
+  // Create audio context and spinning sound
+  useEffect(() => {
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    
+    // Create oscillators for a wooden wheel sound
+    const oscillator1 = audioContext.createOscillator();
+    const oscillator2 = audioContext.createOscillator();
+    const noiseNode = audioContext.createBufferSource();
+    const noiseGain = audioContext.createGain();
+    const gainNode = audioContext.createGain();
+    
+    // Create noise buffer for texture
+    const bufferSize = audioContext.sampleRate * 2;
+    const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+    noiseNode.buffer = buffer;
+    noiseNode.loop = true;
+    
+    // Configure oscillators for a wooden sound
+    oscillator1.type = 'sine';
+    oscillator2.type = 'sine';
+    
+    // Set initial frequencies (lower frequencies for wooden resonance)
+    oscillator1.frequency.setValueAtTime(110, audioContext.currentTime);
+    oscillator2.frequency.setValueAtTime(220, audioContext.currentTime);
+    
+    // Set initial gain to 0 (silent)
+    gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+    noiseGain.gain.setValueAtTime(0, audioContext.currentTime);
+    
+    // Connect nodes
+    oscillator1.connect(gainNode);
+    oscillator2.connect(gainNode);
+    noiseNode.connect(noiseGain);
+    noiseGain.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    // Start oscillators and noise
+    oscillator1.start();
+    oscillator2.start();
+    noiseNode.start();
+    
+    audioContextRef.current = audioContext;
+    spinningSoundRef.current = { 
+      oscillator1, 
+      oscillator2, 
+      noiseNode,
+      noiseGain,
+      gainNode 
+    };
+    
+    return () => {
+      oscillator1.stop();
+      oscillator2.stop();
+      noiseNode.stop();
+      if (noiseStopTimeoutRef.current) {
+        clearTimeout(noiseStopTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const stopNoise = () => {
+    if (!spinningSoundRef.current) return;
+    
+    const { noiseGain } = spinningSoundRef.current;
+    
+    // Fade out noise
+    noiseGain.gain.linearRampToValueAtTime(0, audioContextRef.current?.currentTime || 0 + 0.1);
+    
+    // Stop noise after fade out
+    if (noiseStopTimeoutRef.current) {
+      clearTimeout(noiseStopTimeoutRef.current);
+    }
+    noiseStopTimeoutRef.current = setTimeout(() => {
+      if (spinningSoundRef.current) {
+        spinningSoundRef.current.noiseNode.stop();
+      }
+    }, 100);
+  };
+
+  const playSpinningSound = (rotation: number) => {
+    if (!audioContextRef.current || !spinningSoundRef.current) return;
+    
+    const audioContext = audioContextRef.current;
+    const { oscillator1, oscillator2, noiseNode, noiseGain, gainNode } = spinningSoundRef.current;
+    
+    // Resume audio context if it was suspended
+    if (audioContext.state === 'suspended') {
+      audioContext.resume();
+    }
+    
+    // Calculate rotation speed
+    const rotationDiff = Math.abs(rotation - lastRotationRef.current);
+    
+    // Update frequencies based on rotation speed (lower frequencies for wooden sound)
+    const baseFreq1 = 110; // Lower base frequency for wooden resonance
+    const baseFreq2 = 220;
+    const freq1 = baseFreq1 + (rotationDiff * 0.75); // Slower frequency change
+    const freq2 = baseFreq2 + (rotationDiff * 1.5);
+    
+    oscillator1.frequency.setValueAtTime(freq1, audioContext.currentTime);
+    oscillator2.frequency.setValueAtTime(freq2, audioContext.currentTime);
+    
+    // Fade in
+    gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+    gainNode.gain.linearRampToValueAtTime(0.12, audioContext.currentTime + 0.1);
+    noiseGain.gain.setValueAtTime(0, audioContext.currentTime);
+    noiseGain.gain.linearRampToValueAtTime(0.03, audioContext.currentTime + 0.1);
+    
+    // Fade out
+    gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + 0.8);
+    noiseGain.gain.linearRampToValueAtTime(0, audioContext.currentTime + 0.8);
+    
+    // Stop noise after fade out
+    if (noiseStopTimeoutRef.current) {
+      clearTimeout(noiseStopTimeoutRef.current);
+    }
+    noiseStopTimeoutRef.current = setTimeout(() => {
+      stopNoise();
+    }, 800);
+    
+    lastRotationRef.current = rotation;
+  };
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputText(e.target.value.toUpperCase());
   };
@@ -86,7 +223,9 @@ const CaesarCipher: React.FC = () => {
     const newShift = parseInt(e.target.value);
     if (!isNaN(newShift) && newShift >= 0 && newShift <= 25) {
       setShift(newShift);
-      setOuterRotation(newShift * (360 / 26));
+      const newRotation = newShift * (360 / 26);
+      setOuterRotation(newRotation);
+      playSpinningSound(newRotation);
     }
   };
 
@@ -122,6 +261,9 @@ const CaesarCipher: React.FC = () => {
           const cipherIndex = alphabet.indexOf(encrypted);
           setHighlightedInnerIndex(plainIndex);
           setHighlightedOuterIndex(cipherIndex);
+          
+          // Play spinning sound for each letter encryption
+          playSpinningSound(outerRotation);
         } else {
           setHighlightedInnerIndex(-1);
           setHighlightedOuterIndex(-1);
@@ -139,6 +281,7 @@ const CaesarCipher: React.FC = () => {
         setIsAnimating(false);
         setHighlightedInnerIndex(-1);
         setHighlightedOuterIndex(-1);
+        stopNoise(); // Stop noise when encryption is complete
       }
     };
     
